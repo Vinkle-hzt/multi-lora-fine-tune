@@ -4,6 +4,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "1,2,3"
 import mlora
 import argparse
 import logging
+import torch.multiprocessing as mp
 
 # Command Line Arguments
 parser = argparse.ArgumentParser(description='m-LoRA main program')
@@ -51,24 +52,19 @@ parser.add_argument('--balance', type=int, nargs="+",
 
 args = parser.parse_args()
 
-if __name__ == "__main__":
-    # set the random seed
-    mlora.setup_seed(args.seed)
-    mlora.setup_logging(args.log_level, args.log_file)
-    mlora.setup_cuda_check()
-
+def create_model(rank: int, world_size: int):
     # load part of model to device
     device = args.device
     partial_model_to_device = None
     if args.pipeline:
-        assert args.rank != -1
-        assert len(args.balance) >= args.rank
+        assert rank != -1
+        assert len(args.balance) >= rank
         logging.info(
-            f"Pipeline parallelism, rank is {args.rank} and balance is {args.balance}.")
+            f"Pipeline parallelism, rank is {rank} and balance is {args.balance}.")
 
         partial_model_to_device = [
-            index + sum(args.balance[:args.rank])for index in range(0, args.balance[args.rank])]
-        device = f"cuda:{args.rank}"
+            index + sum(args.balance[:rank])for index in range(0, args.balance[rank])]
+        device = f"cuda:{rank}"
     tokenizer, model = mlora.load_base_model(args.base_model,
                                              args.model_type,
                                              device,
@@ -89,6 +85,23 @@ if __name__ == "__main__":
                           config,
                           dispatcher,
                           device,
-                          args.rank,
+                          rank,
                           args.balance)
         exit(pipe.run())
+
+if __name__ == "__main__":
+    # set the random seed
+    mlora.setup_seed(args.seed)
+    mlora.setup_logging(args.log_level, args.log_file)
+    mlora.setup_cuda_check()
+
+    mp.set_start_method('spawn')
+    world_size = len(args.balance)
+    ps = []
+    for i in range(world_size):
+        p = mp.Process(target=create_model, args=(i, world_size))
+        p.start()
+        ps.append(p)
+    
+    for p in ps:
+        p.join()
