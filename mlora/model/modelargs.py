@@ -70,5 +70,6 @@ class MultiLoraBatchData:
     batch_tokens_: List[Tokens] = None
     additional_mask_: List[Masks] = None
     lora_batch_data_config_: List[LoraBatchDataConfig] = None
+    total_tokens_: int = 0
 
     inference_model_: bool = False
