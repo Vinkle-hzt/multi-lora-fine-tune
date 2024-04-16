@@ -47,6 +47,13 @@ class Pipe():
     multi_trainer_context_: MultiTrainerContext = None
     input_queue_: DeviceSwapQueue = None
 
+    # for benchmark
+    start_time: int = 0
+    total_token: int = 0
+    f_cnt: int = 0
+    b_cnt: int = 0
+    warm_up: int = 10
+
     def is_stop_signal(self, data: torch.tensor) -> bool:
         return data.dtype == torch.long and torch.numel(data) == 1
 
@@ -133,6 +140,7 @@ class Pipe():
             data = torch.tensor(train_input.batch_tokens_, dtype=torch.int64, device="cpu")
             msg = PipeMessage(self.device_, self.device_, PipeMessageType.ACTIVATIONS,
                               0, data, train_input)
+            msg.batch_data_.total_tokens_ = data.numel()
             self.input_queue_.put(msg)
 
         assert self.role_ == WorkerRole.HEAD
@@ -144,6 +152,9 @@ class Pipe():
             msg = self.input_queue_.get_nowait()
             if not msg:
                 return
+            if self.start_time == 0 and self.f_cnt >= self.warm_up:
+                self.start_time = time.time()
+            self.f_cnt += 1
             train_input = msg.batch_data_
             data = self.forward(msg.tensor_data_, msg.batch_data_)
             self.forward_cnt_ += 1
@@ -179,6 +190,11 @@ class Pipe():
         self.trainer_step(message.batch_data_.lora_batch_data_config_)
 
         del self.backward_cache_[msg_id]
+        if self.role_ == WorkerRole.HEAD:
+            self.b_cnt += 1
+            if self.b_cnt >= self.warm_up:
+                self.total_token += message.batch_data_.total_tokens_
+                print(f"average: {self.total_token / (time.time() - self.start_time) :.2f}")
 
     def process_forward(self):
         assert self.role_ != WorkerRole.HEAD
@@ -191,7 +207,7 @@ class Pipe():
             return
         logging.debug(
             f"Recv the activations - {str(message.msg_id_)[:8]} from {message.src_}")
-
+        start_time = time.time()
         # use RecvOperator get the real data
         #   the operator also auto send the backward grad to prev worker
         if self.is_stop_signal(message.tensor_data_):
@@ -223,6 +239,7 @@ class Pipe():
             total_loss.backward()
 
             self.trainer_step(lora_configs)
+            print(f"1FB: {message.batch_data_.total_tokens_ / (time.time() - start_time) :.2f}")
 
     def trainer_step(self, lora_configs: List[LoraBatchDataConfig]):
         for lora_config in lora_configs:

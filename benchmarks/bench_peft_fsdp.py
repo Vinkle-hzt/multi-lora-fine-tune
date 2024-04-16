@@ -152,8 +152,10 @@ def train(model: FSDP,
     start_time = time.time()
     total_tokens = 0
     for step in range(benchmark_args.test_steps):
+        cur_start_time = time.time()
         data = labels.to(local_rank)
-        total_tokens += data.numel()
+        cur_tokens = data.numel()
+        total_tokens += cur_tokens
         with autocast():
             loss = model(input_ids=data, labels=data).loss
         loss.backward()
@@ -164,6 +166,7 @@ def train(model: FSDP,
 
         if local_rank == 0:
             print(f'average {total_tokens / (time.time() - start_time) : .2f} tokens/s')
+            print(f'cur {cur_tokens / (time.time() - cur_start_time) : .2f} tokens/s')
 
 
 if __name__ == "__main__":
